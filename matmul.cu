@@ -8,11 +8,14 @@
 
 struct timespec begin, end;
 double elapsed;
-#define MAT_N 800
-#define MAT_M 800
+#define MAT_N 100
+#define MAT_M 1000
 float *mat_A;//[MAT_M*MAT_N];
 float *mat_B;//[MAT_N*MAT_M];
-float *mat_C_cpu;//[MAT_M*MAT_M]; // results in MxM matrix
+float *mat_C;
+float *mat_C_result_copy;
+float *mat_A_gpu;
+float *mat_B_gpu;
 float *mat_C_gpu;//[MAT_M*MAT_M]; // results in MxM matrix
 
 /*
@@ -39,19 +42,22 @@ __host__ __device__ inline void matMul_base(int i, float* A, float* B, float* C)
 
 void matMul_CPU(){
   for (int i = 0; i < MAT_M; i++) {
-    matMul_base(i, mat_A, mat_B, mat_C_cpu);
+    matMul_base(i, mat_A, mat_B, mat_C);
   }
 }
 
-__global__ void matMul_GPU(float* mat_A, float* mat_B, float* mat_C_gpu){
+__global__ void matMul_GPU(float* A, float* B, float* C){
   int global_thread_id = blockIdx.x*blockDim.x+threadIdx.x;
-  matMul_base(global_thread_id, mat_A, mat_B, mat_C_gpu);
+  matMul_base(global_thread_id, A,B,C);
 }
 
 int main(int argc, char *argv[]) {
-  cudaMallocManaged(&mat_A, MAT_M*MAT_N*sizeof(float));
-  cudaMallocManaged(&mat_B, MAT_N*MAT_M*sizeof(float));
-  cudaMallocManaged(&mat_C_cpu, MAT_M*MAT_M*sizeof(float));
+  mat_A = (float*)malloc(MAT_M*MAT_N*sizeof(float));
+  mat_B = (float*)malloc(MAT_M*MAT_N*sizeof(float));
+  mat_C = (float*)malloc(MAT_M*MAT_M*sizeof(float));
+  mat_C_result_copy = (float*)malloc(MAT_M*MAT_M*sizeof(float));
+  cudaMallocManaged(&mat_A_gpu, MAT_M*MAT_N*sizeof(float));
+  cudaMallocManaged(&mat_B_gpu, MAT_N*MAT_M*sizeof(float));
   cudaMallocManaged(&mat_C_gpu, MAT_M*MAT_M*sizeof(float));
 
   clock_gettime(CLOCK_MONOTONIC, &begin);
@@ -68,6 +74,10 @@ int main(int argc, char *argv[]) {
       mat_B[j*MAT_N + i] = i+j;
     }
   }
+
+
+  cudaMemcpy(mat_A_gpu,mat_A, MAT_M*MAT_N*sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(mat_B_gpu,mat_B, MAT_M*MAT_N*sizeof(float), cudaMemcpyHostToDevice);
 
   printf("done initializing\n");
 
@@ -86,9 +96,10 @@ int main(int argc, char *argv[]) {
   ////
 
   clock_gettime(CLOCK_MONOTONIC, &begin);
-  int num_blocks = (MAT_M + 32 - 1)/32;
+  int block_dim = 32;
+  int num_blocks = (MAT_M + block_dim - 1)/block_dim;
   printf("num blocks is: %d\n", num_blocks);
-  matMul_GPU<<<num_blocks,32>>>(mat_A, mat_B, mat_C_gpu);
+  matMul_GPU<<<num_blocks,block_dim>>>(mat_A_gpu, mat_B_gpu, mat_C_gpu);
 
   cudaError_t err = cudaSuccess;
   if (cudaGetLastError() != cudaSuccess){
@@ -99,12 +110,14 @@ int main(int argc, char *argv[]) {
   cudaDeviceSynchronize();
   clock_gettime(CLOCK_MONOTONIC, &end);
 
+  cudaMemcpy(mat_C_result_copy,mat_C_gpu, MAT_M*MAT_M*sizeof(float), cudaMemcpyDeviceToHost);
+
   elapsed = end.tv_sec - begin.tv_sec;
   elapsed += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
   printf("took %f s\n", elapsed);
 
   for (int i = 0; i < MAT_M * MAT_M; i++){
-     if (fabs(mat_C_gpu[i] - mat_C_cpu[i]) > 1e-5){
+     if (fabs(mat_C_result_copy[i] - mat_C[i]) > 1e-5){
        printf("no honey\n");
      }
   }
