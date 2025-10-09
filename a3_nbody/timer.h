@@ -1,4 +1,3 @@
-#define _DEFAULT_SOURCE
 #include <sys/time.h>
 
 #ifndef TIMER_H
