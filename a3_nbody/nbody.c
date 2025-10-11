@@ -44,6 +44,7 @@ void bodyForce(Body *p, float dt, int n) {
 }
 
 int main(const int argc, const char **argv) {
+  printf("hello host\n");
 
   int nBodies = 30000;
   if (argc > 1)
@@ -71,13 +72,14 @@ int main(const int argc, const char **argv) {
       p[i].z += p[i].vz * dt;
     }
 
-    const double tElapsed = GetTimer() / 1000.0;
+    const double tElapsed = GetTimer();
     if (iter > 1) { // First iter is warm up
       totalTime += tElapsed;
     }
   }
   double avgTime = totalTime / (double)(nIters - 1);
-  printf("%d, %0.3f\n", nBodies, 1e-9 * nBodies * nBodies / avgTime);
-  printf("totalTime = %0.3f\n", totalTime);
+  printf("n = %d, n*n/avgTime = %0.3f\n", nBodies, nBodies * nBodies / avgTime);
+  printf("totalTime = %0.3f, ", totalTime);
+  printf("averageTime = %0.3f\n", avgTime);
   free(buf);
 }
