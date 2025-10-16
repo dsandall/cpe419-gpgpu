@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 
 #define KERNEL_N 3
-#define IMAGE_N 11ULL
+#define IMAGE_N 9ULL
 #define OUTPUT_N (IMAGE_N - KERNEL_N + 1)
 
 // tile size 16 makes our threads per block 256
@@ -15,8 +15,8 @@ __global__ void simpleConv(float *img, float *kernel, float *imgf, int Nx,
   int output_i = blockIdx.x * TILE_SZ + threadIdx.x;
   int output_j = blockIdx.y * TILE_SZ + threadIdx.y;
   // just shift indexes over to find associated input indexes
-  int image_i = output_i + 1;
-  int image_j = output_j + 1;
+  int image_i = output_i + center;
+  int image_j = output_j + center;
 
   float sum = 0;
   // MAC each surrounding pixel in the (square) kernel zone
@@ -111,6 +111,7 @@ int main() {
   printf("time elapsed(ms, sequential): %f\n", ms);
 
   // verify
+  printArray1D(h_G, h_G_sequential, OUTPUT_N * OUTPUT_N);
   checkFloats(OUTPUT_N * OUTPUT_N, h_G, h_G_sequential);
 
   // Cleanup
