@@ -1,50 +1,32 @@
+#include "../helpful.cuh"
+#include <cuda.h>
 #include <cuda_runtime.h>
-#include <stdio.h>
-  #include <stdlib.h>  // for rand(), RAND_MAX
 
 #define TILE_WIDTH 16
-#define N 1024        // Matrix dimension (N x N)
+#define N 1024ULL     // Matrix dimension (N x N)
 #define NUM_STREAMS 4 // Number of CUDA streams
 // split the 1024x1024 matrix into 4 streams (4 equal rows)
-// each of these rows are 256x1024, split into 
+// each of these rows are 256x1024, split into
 
-__host__ __device__ 
-inline int ceilDiv(int a, int b) {
-    return (a + b - 1) / b;
-}
-__host__
-inline float getRandOneish(){
-  // random vals from -1 to 1
-    float r1 = static_cast<float>(rand()) / RAND_MAX;  // in [0, 1]
-    return 2.0f * r1 - 1.0f;  // scale to [-1, 1]
-}
-__host__
-void checkCuda(cudaError_t result, const char *msg) {
-  if (result != cudaSuccess) {
-    fprintf(stderr, "CUDA Error: %s: %s\n", msg, cudaGetErrorString(result));
-    exit(EXIT_FAILURE);
+__host__ void matrixmult(float *fa, float *fb, float *fc, int Hight,
+                         int Width) {
+  int row, col, k;
+  float Pvalue = 0;
+  for (row = 0; row < Hight; row++) {
+    for (col = 0; col < Width; col++) {
+      Pvalue = 0;
+      for (k = 0; k < Width; k++) {
+        Pvalue += fa[row * Width + k] * fb[k * Width + col];
+      }
+      fc[row * Width + col] = Pvalue;
+    }
   }
 }
 
-__host__
-void matrixmult(float *fa, float *fb, float *fc,int Hight, int Width){
-	int row, col, k;
-	float Pvalue=0;
-	for (row=0; row<Hight; row++){
-      for(col=0; col<Width; col++) {
-          Pvalue=0;
-          for(k=0; k<Width; k++){
-              Pvalue+=fa[row*Width+k]*fb[k*Width+col];
-          }
-			    fc[row*Width+col]=Pvalue;
-      }
-	}
-}
-
 __global__ void matMulTiled(const float *A, const float *B, float *C, int n) {
-  // Calculates a single element's result, by cooperating within a thread block 
+  // Calculates a single element's result, by cooperating within a thread block
   // to collect all necessary data, across tiles
-  
+
   // Shared memory (shared per block)
   __shared__ float As[TILE_WIDTH][TILE_WIDTH];
   __shared__ float Bs[TILE_WIDTH][TILE_WIDTH];
@@ -57,18 +39,18 @@ __global__ void matMulTiled(const float *A, const float *B, float *C, int n) {
   int Col = bx * TILE_WIDTH + tx;
 
   float Cvalue = 0.0f;
-  // each element in matrix C requires data collection along the entire matrix by row and col
-  // for each tile in a row/column of the entire NxN matrix,
+  // each element in matrix C requires data collection along the entire matrix
+  // by row and col for each tile in a row/column of the entire NxN matrix,
   for (int t = 0; t < (n / TILE_WIDTH); ++t) {
     // cache the values of that tile element:
     //  calculate the address,
     //  put A and B in cache (if in bounds)
     //  (we are essentially walking row and column (A and B) at once)
     bool AinBounds = (Row < n && (t * TILE_WIDTH + tx) < n);
-      As[ty][tx] = AinBounds ? A[Row * n + t * TILE_WIDTH + tx] : 0.0f;
+    As[ty][tx] = AinBounds ? A[Row * n + t * TILE_WIDTH + tx] : 0.0f;
 
     bool BinBounds = ((t * TILE_WIDTH + ty) < n && Col < n);
-      Bs[ty][tx] = BinBounds ? B[(t * TILE_WIDTH + ty) * n + Col] : 0.0f;
+    Bs[ty][tx] = BinBounds ? B[(t * TILE_WIDTH + ty) * n + Col] : 0.0f;
 
     // wait for all threads in this block to finish populating the shared memory
     __syncthreads();
@@ -77,43 +59,36 @@ __global__ void matMulTiled(const float *A, const float *B, float *C, int n) {
     for (int i = 0; i < TILE_WIDTH; ++i)
       Cvalue += As[ty][i] * Bs[i][tx];
 
-    //don't start next iteration before all threads have retrieved from shared mem
+    // don't start next iteration before all threads have retrieved from shared
+    // mem
     __syncthreads();
   }
 
-  // finally, copy Cval to the relevant location in device memory so it can be accessed
+  // finally, copy Cval to the relevant location in device memory so it can be
+  // accessed
   if (Row < n && Col < n)
     C[Row * n + Col] = Cvalue;
 }
 
-
 int main() {
-  int size = N * N * sizeof(float);
+  size_t size = N * N * sizeof(float);
   float *h_A = (float *)malloc(size);
   float *h_B = (float *)malloc(size);
   float *h_C = (float *)malloc(size);
   float *h_C_seq = (float *)malloc(size);
 
   // init A and B to random vals from -1 to 1
-  srand(0);  // seed the random generator once
+  srand(0); // seed the random generator once
   for (int i = 0; i < N * N; i++) {
     h_A[i] = getRandOneish();
     h_B[i] = getRandOneish();
   }
-  
+
   // init timing stuff
   cudaEvent_t startEvent, stopEvent;
   float ms;
   cudaEventCreate(&startEvent);
   cudaEventCreate(&stopEvent);
-
-  // perform sequentially
-  cudaEventRecord(startEvent);
-  matrixmult(h_A, h_B, h_C_seq, N, N);
-  cudaEventRecord(stopEvent);
-  cudaEventElapsedTime(&ms, startEvent, stopEvent);
-  printf("time elapsed(ms, sequential): %f\n", ms);
-
 
   // prepare streams and device memory
   float *d_A[NUM_STREAMS], *d_B, *d_C[NUM_STREAMS];
@@ -130,12 +105,16 @@ int main() {
   checkCuda(cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice), "Memcpy B");
 
   int rowsPerStream = N / NUM_STREAMS; // 256x1024 for each stream
-  dim3 dimBlock(TILE_WIDTH, TILE_WIDTH); // 16x16= spawn 256 threads for each block
-  dim3 dimGrid(ceilDiv(N, TILE_WIDTH), ceilDiv(rowsPerStream, TILE_WIDTH)); // 64 x 16 blocks per stream
-                                      // NxN = 256 x (64x16) x 4 streams = 1024x1024
+  dim3 dimBlock(TILE_WIDTH,
+                TILE_WIDTH); // 16x16= spawn 256 threads for each block
+  dim3 dimGrid(
+      ceilDiv(N, TILE_WIDTH),
+      ceilDiv(rowsPerStream,
+              TILE_WIDTH)); // 64 x 16 blocks per stream
+                            // NxN = 256 x (64x16) x 4 streams = 1024x1024
 
   // run kernel(s) and record time
-  cudaEventRecord(startEvent,0);
+  cudaEventRecord(startEvent, 0);
   for (int i = 0; i < NUM_STREAMS; i++) {
     int offset = i * rowsPerStream * N;
     checkCuda(cudaMemcpyAsync(d_A[i], h_A + offset, size / NUM_STREAMS,
@@ -152,27 +131,22 @@ int main() {
   // Synchronize all streams
   for (int i = 0; i < NUM_STREAMS; i++)
     cudaStreamSynchronize(streams[i]);
-  
+
   // report parallelized execution time
-  cudaEventRecord(stopEvent,0);
+  cudaEventRecord(stopEvent, 0);
   cudaEventSynchronize(stopEvent);
   cudaEventElapsedTime(&ms, startEvent, stopEvent);
   printf("time elapsed(ms, parallelized): %f\n", ms);
 
+  // perform sequentially
+  cudaEventRecord(startEvent);
+  matrixmult(h_A, h_B, h_C_seq, N, N);
+  cudaEventRecord(stopEvent);
+  cudaEventElapsedTime(&ms, startEvent, stopEvent);
+  printf("time elapsed(ms, sequential): %f\n", ms);
+
   // Verify correctness
-  int errors = 0;
-  for (int i = 0; i < N; i++) {
-      for (int j = 0; j < N; j++) {
-          float diff = fabs(h_C[i * N + j] - h_C_seq[i * N + j]);
-          if (diff > 1e-3f) {
-              if (errors < 10)  // only print first few
-                  printf("Mismatch at (%d,%d): GPU=%f, CPU=%f, diff=%f\n",
-                         i, j, h_C[i * N + j], h_C_seq[i * N + j], diff);
-              errors++;
-          }
-      }
-  }
-  printf("found %d total errors\n",errors);
+  checkFloats(N * N, h_C, h_C_seq);
 
   // Cleanup
   for (int i = 0; i < NUM_STREAMS; i++) {
