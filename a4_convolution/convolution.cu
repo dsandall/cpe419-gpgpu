@@ -2,8 +2,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define KERNEL_N 3
-#define IMAGE_N 9ULL
+#define KERNEL_N 7
+#define IMAGE_N 17ULL
 #define OUTPUT_N (IMAGE_N - KERNEL_N + 1)
 
 // tile size 16 makes our threads per block 256
@@ -18,17 +18,24 @@ __global__ void simpleConv(float *img, float *kernel, float *imgf, int Nx,
   int image_i = output_i + center;
   int image_j = output_j + center;
 
-  float sum = 0;
-  // MAC each surrounding pixel in the (square) kernel zone
-  for (int ki = 0; ki < kernel_size; ki++) {
-    for (int kj = 0; kj < kernel_size; kj++) {
-      int ii = image_j + kj - center;
-      int jj = image_i + ki - center;
-      sum += img[jj * Nx + ii] * kernel[ki * kernel_size + kj];
+  if (image_i < (Ny - center) && image_j < Nx - center) {
+    printf("(%d,%d) -> (%d,%d)\n", output_i, output_j, image_i, image_j);
+
+    // MAC each surrounding pixel in the (square) kernel zone
+    float sum = 0;
+    for (int ki = 0; ki < kernel_size; ki++) {
+      for (int kj = 0; kj < kernel_size; kj++) {
+        int ii = image_j + kj - center;
+        int jj = image_i + ki - center;
+        sum += img[jj * Nx + ii] * kernel[ki * kernel_size + kj];
+      }
     }
+    // and store the result in device memory
+    imgf[image_i * Nx + image_j] = sum;
+  } else {
+    printf("DIVERGED: (%d,%d) -> (%d,%d)\n", output_i, output_j, image_i,
+           image_j);
   }
-  // and store the result in device memory
-  imgf[image_i * Nx + image_j] = sum;
 }
 __host__ void doConv(float *img, float *kernel, float *imgf, int Nx, int Ny,
                      int kernel_size, int center) {
@@ -61,7 +68,7 @@ int main() {
   float *h_G_sequential = (float *)malloc(size_G);
 
   // Initialize image with random integer values [0, 255]
-  srand(0);
+  srand(243);
   for (int i = 0; i < IMAGE_N * IMAGE_N; i++)
     h_F[i] = (float)(rand() % 256); // convert to float automatically
 
