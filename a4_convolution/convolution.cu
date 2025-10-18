@@ -1,14 +1,17 @@
+
 #include "../helpful.cuh"
 #include <ctime>
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define KERNEL_N 53
-#define IMAGE_N 301ULL
+#define KERNEL_N 77
+#define IMAGE_N 611ULL
 #define OUTPUT_N (IMAGE_N - KERNEL_N + 1)
 
-// #define COMPARE_SEQ
 #define COMPARE_IM2COL
+#define COMPARE_SIMPLE_CONV
+#define COMPARE_IM2COL_SEQ
+#define COMPARE_SEQ
 
 // tile size 16 makes our threads per block 256
 #define TILE_SZ 16
@@ -68,39 +71,62 @@ __host__ void doConv(float *img, float *kernel, float *imgf, int Nx, int Ny,
     }
   }
 }
+__global__ void im2col_par(float *input, float *kernel, float *out, int H,
+                           int W, int KH, int KW) {
+  const int out_h = H - KH + 1;
+  const int out_w = W - KW + 1;
 
-__host__ void im2col_alt(float *input, float *kernel, float *out, int H, int W,
-                         int KH, int KW) {
-  int out_h = H - KH + 1;
-  int out_w = W - KW + 1;
-  int patch = 0;
+  // const int col_h = KH * KW;
+  const int col_h = KERNEL_N * KERNEL_N;
+  const int col_w = out_h * out_w;
+  // float *col = (float *)malloc(sizeof(float) * col_h * col_w);
+  float col[col_h];
 
-  int col_h = KH * KW;
-  int col_w = out_h * out_w;
-  float *col = (float *)malloc(sizeof(float) * col_h * col_w);
+  // for (int i = 0; i < out_h; ++i) {
+  //  for (int j = 0; j < out_w; ++j) {
+  // given indexes for the output matrix,
+  int i_block = blockIdx.x * TILE_SZ;
+  int j_block = blockIdx.y * TILE_SZ;
+  int i = i_block + threadIdx.x;
+  int j = j_block + threadIdx.y;
+  // just shift indexes over to find associated input indexes
+  int image_i = i + KH / 2;
+  int image_j = j + KH / 2;
 
-  for (int i = 0; i < out_h; ++i) {
-    for (int j = 0; j < out_w; ++j) {
+  bool valid = image_i < (W - KH / 2) && image_j < H - KH / 2;
+  if (!valid)
+    return; // diverged
+            //
 
-      // build col
-      int idx = (i * out_w + j) * (KH * KW);
-      for (int ki = 0; ki < KH; ++ki) {
-        for (int kj = 0; kj < KW; ++kj) {
-          col[idx++] = input[(i + ki) * W + (j + kj)];
-        }
-      }
+  // UNFINISHED:
+  //__shared__ float patch[(KERNEL_N + 17)*(KERNEL_N + 17)];
+  // const int tid = threadIdx.x + 16 * threadIdx.y;
+  // const int block_offset = i_block + j_block * IMAGE_N;
 
-      // do matmul
-      float sum = 0.0f;
-      int p = i * out_w + j;
-      for (int k = 0; k < col_h; ++k) {
-        sum += kernel[k] * col[k + p * col_h];
-      }
-      out[p] = sum;
+  // patch[threadIdx.x + ((KERNEL_N+17) * threadIdx.y)] = input[tid +
+  // block_offset]; tid += 256; if (tid < (KERNEL_N + 17)*(KERNEL_N + 17)){
+  //   patch[threadIdx.x + ((KERNEL_N+17) * threadIdx.y)] = input[tid +
+  //   block_offset];
+  // }
+  //
+
+  // build col
+  // int idx = (i * out_w + j) * (KH * KW);
+  int idx = 0;
+  for (int ki = 0; ki < KH; ++ki) {
+    for (int kj = 0; kj < KW; ++kj) {
+      col[idx++] = input[(i + ki) * W + (j + kj)];
     }
   }
 
-  free(col);
+  // do matmul
+  float sum = 0.0f;
+  int p = i * out_w + j;
+  for (int k = 0; k < col_h; ++k) {
+    // sum += kernel[k] * col[k + p * col_h];
+    sum += kernel[k] * col[k];
+  }
+  out[p] = sum;
 }
 
 __host__ void im2col_mm_seq(float *input, float *kernel, float *out, int H,
@@ -141,14 +167,14 @@ __host__ void im2col_mm_seq(float *input, float *kernel, float *out, int H,
 
 int main() {
   // malloc host memory
-  size_t size_F = IMAGE_N * IMAGE_N * sizeof(float);
-  size_t size_H = KERNEL_N * KERNEL_N * sizeof(float);
-  size_t size_G = OUTPUT_N * OUTPUT_N * sizeof(float);
+  const size_t size_F = IMAGE_N * IMAGE_N * sizeof(float);
+  const size_t size_H = KERNEL_N * KERNEL_N * sizeof(float);
+  const size_t size_G = OUTPUT_N * OUTPUT_N * sizeof(float);
+
   float *h_F = (float *)malloc(size_F);
   float *h_H = (float *)malloc(size_H);
-  float *h_G = (float *)malloc(size_G);
-  float *h_G_sequential = (float *)malloc(size_G);
-  float *h_G_im2col = (float *)malloc(size_G);
+  float *h_G_known_good = (float *)malloc(size_G);
+  float *h_G_comp = (float *)malloc(size_G);
 
   // Initialize image with random integer values [0, 255]
   srand(time(NULL));
@@ -179,7 +205,7 @@ int main() {
   printf("dimblock is %d x %d\n", TILE_SZ, TILE_SZ);
   printf("dimgrid  is %d\n", dimGrid.x);
 
-  // do parallel kernel
+#ifdef COMPARE_SIMPLE_CONV
   cudaEventRecord(startEvent);
 
   // TODO: make async later
@@ -190,7 +216,7 @@ int main() {
   simpleConv<<<dimGrid, dimBlock>>>(d_F, d_H, d_G, IMAGE_N, IMAGE_N, KERNEL_N,
                                     KERNEL_N / 2);
 
-  checkCuda(cudaMemcpy(h_G, d_G, size_G, cudaMemcpyDeviceToHost),
+  checkCuda(cudaMemcpy(h_G_known_good, d_G, size_G, cudaMemcpyDeviceToHost),
             "Memcpy G back to the host");
 
   cudaDeviceSynchronize();
@@ -199,39 +225,62 @@ int main() {
   cudaEventSynchronize(stopEvent);
   cudaEventElapsedTime(&ms, startEvent, stopEvent);
   printf("time elapsed(ms, parallel): %f\n", ms);
+#endif
 
 #ifdef COMPARE_IM2COL
+  cudaEventRecord(startEvent);
+
+  // TODO: make async later
+  checkCuda(cudaMemcpy(d_F, h_F, size_F, cudaMemcpyHostToDevice), "Memcpy F");
+  checkCuda(cudaMemcpy(d_H, h_H, size_H, cudaMemcpyHostToDevice), "Memcpy H");
+  im2col_par<<<dimGrid, dimBlock>>>(d_F, d_H, d_G, IMAGE_N, IMAGE_N, KERNEL_N,
+                                    KERNEL_N);
+
+  checkCuda(cudaMemcpy(h_G_comp, d_G, size_G, cudaMemcpyDeviceToHost),
+            "Memcpy G back to the host");
+
+  cudaDeviceSynchronize();
+
+  cudaEventRecord(stopEvent);
+  cudaEventSynchronize(stopEvent);
+  cudaEventElapsedTime(&ms, startEvent, stopEvent);
+  printf("time elapsed(ms, parallel im2col): %f\n", ms);
+
+  // verify
+  checkFloats(OUTPUT_N * OUTPUT_N, h_G_known_good, h_G_comp);
+
+#endif
+
+#ifdef COMPARE_IM2COL_SEQ
   float *h_Fcolumn = (float *)malloc(size_F);
 
   cudaEventRecord(startEvent);
-  // im2col_mm_seq(h_F, h_H, h_G_im2col, IMAGE_N, IMAGE_N, KERNEL_N, KERNEL_N);
-  im2col_alt(h_F, h_H, h_G_im2col, IMAGE_N, IMAGE_N, KERNEL_N, KERNEL_N);
+  im2col_mm_seq(h_F, h_H, h_G_comp, IMAGE_N, IMAGE_N, KERNEL_N, KERNEL_N);
   cudaEventRecord(stopEvent);
   cudaEventSynchronize(stopEvent);
   cudaEventElapsedTime(&ms, startEvent, stopEvent);
   printf("time elapsed(ms, im2col sequential): %f\n", ms);
 
   // verify
-  checkFloats(OUTPUT_N * OUTPUT_N, h_G, h_G_im2col);
+  checkFloats(OUTPUT_N * OUTPUT_N, h_G_known_good, h_G_comp);
 #endif
 
   // do sequential
 #ifdef COMPARE_SEQ
   cudaEventRecord(startEvent);
-  doConv(h_F, h_H, h_G_sequential, IMAGE_N, IMAGE_N, KERNEL_N, KERNEL_N / 2);
+  doConv(h_F, h_H, h_G_comp, IMAGE_N, IMAGE_N, KERNEL_N, KERNEL_N / 2);
   cudaEventRecord(stopEvent);
   cudaEventSynchronize(stopEvent);
   cudaEventElapsedTime(&ms, startEvent, stopEvent);
   printf("time elapsed(ms, sequential): %f\n", ms);
 
   // verify
-  // printArray1D(h_G, h_G_sequential, OUTPUT_N * OUTPUT_N);
-  checkFloats(OUTPUT_N * OUTPUT_N, h_G, h_G_sequential);
+  checkFloats(OUTPUT_N * OUTPUT_N, h_G_known_good, h_G_comp);
 #endif
 
   // Cleanup
   free(h_F);
-  free(h_G);
+  free(h_G_known_good);
   free(h_H);
-  free(h_G_sequential);
+  free(h_G_comp);
 }
