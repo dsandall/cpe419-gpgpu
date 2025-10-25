@@ -115,12 +115,12 @@ const int ELEMS_PER_BLOCK = BLOCK_SIZE * 2;
 void blelloch_scan(float *d_data, int N) {
   int numBlocks = (N + ELEMS_PER_BLOCK - 1) / ELEMS_PER_BLOCK;
 
+  printf("blelloch_scan call: numBlocks is %d\n", numBlocks);
+
   // Allocate memory for per-block sums
   float *d_block_sums = nullptr;
   cudaMalloc(&d_block_sums, numBlocks * sizeof(float));
 
-  printf("dimblock is %d \n", BLOCK_SIZE);
-  printf("dimgrid  is %d\n", numBlocks);
   // --- Phase 1: local scans ---
   block_scan<<<numBlocks, BLOCK_SIZE, ELEMS_PER_BLOCK * sizeof(float)>>>(
       d_data, d_block_sums, N);
@@ -144,7 +144,7 @@ void blelloch_scan(float *d_data, int N) {
 //////
 
 __global__ void block_scan(float *data, float *block_sums, int n) {
-  __shared__ float temp[BLOCK_SIZE * 2];
+  __shared__ float temp[ELEMS_PER_BLOCK];
   int gid = blockIdx.x * blockDim.x * 2 + threadIdx.x;
   int tid = threadIdx.x;
 
