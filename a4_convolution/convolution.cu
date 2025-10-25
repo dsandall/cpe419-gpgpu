@@ -1,11 +1,12 @@
-
 #include "../helpful.cuh"
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define KERNEL_N 77
-#define IMAGE_N 611ULL
+#define KERNEL_N 9
+#define IMAGE_N 33ULL
 #define OUTPUT_N (IMAGE_N - KERNEL_N + 1)
 
 #define COMPARE_IM2COL
@@ -15,10 +16,6 @@
 
 // tile size 16 makes our threads per block 256
 #define TILE_SZ 16
-
-const int output_elements =
-    IMAGE_N - (KERNEL_N / 2) +
-    1; // this should be the number of vars in the output
 
 __global__ void simpleConv(float *img, float *kernel, float *imgf, int Nx,
                            int Ny, int kernel_size, int center) {
@@ -71,61 +68,92 @@ __host__ void doConv(float *img, float *kernel, float *imgf, int Nx, int Ny,
     }
   }
 }
+
 __global__ void im2col_par(float *input, float *kernel, float *out, int H,
                            int W, int KH, int KW) {
+
   const int out_h = H - KH + 1;
-  const int out_w = W - KW + 1;
-
-  // const int col_h = KH * KW;
+  const int out_w = out_h;
   const int col_h = KERNEL_N * KERNEL_N;
-  const int col_w = out_h * out_w;
-  // float *col = (float *)malloc(sizeof(float) * col_h * col_w);
-  float col[col_h];
-
   // for (int i = 0; i < out_h; ++i) {
   //  for (int j = 0; j < out_w; ++j) {
   // given indexes for the output matrix,
-  int i_block = blockIdx.x * TILE_SZ;
-  int j_block = blockIdx.y * TILE_SZ;
-  int i = i_block + threadIdx.x;
-  int j = j_block + threadIdx.y;
-  // just shift indexes over to find associated input indexes
-  int image_i = i + KH / 2;
-  int image_j = j + KH / 2;
 
-  bool valid = image_i < (W - KH / 2) && image_j < H - KH / 2;
+  const int patch_n = (KERNEL_N + TILE_SZ - 1);
+  const int patch_alt = (KERNEL_N + IMAGE_N - 1);
+  __shared__ float patch[patch_n][patch_n];
+  int ltpat_n = (patch_alt < patch_n) ? patch_alt : patch_n;
+  float colloc[col_h];
+
+  // populate shared mem with image data
+  int idx = (threadIdx.x + threadIdx.y * TILE_SZ);
+  while (idx < (ltpat_n * ltpat_n)) {
+    int pi = idx % ltpat_n;
+    int pj = idx / ltpat_n;
+    int ii = pi + blockIdx.x * TILE_SZ;
+    int ij = pj + blockIdx.y * TILE_SZ;
+    patch[pi][pj] = input[ii + ij * W];
+    // printf("ltpat_n = %d\n", ltpat_n);
+    // printf("%d(%d,%d) : %d,%d - %d,%d\n", idx, blockIdx.x, blockIdx.y, ii,
+    // ij,
+    //        pi, pj);
+
+    idx += TILE_SZ * TILE_SZ;
+  };
+
+  const int i = blockIdx.x * ltpat_n + threadIdx.x;
+  const int j = blockIdx.y * ltpat_n + threadIdx.y;
+  bool valid = i < OUTPUT_N && j < OUTPUT_N;
   if (!valid)
-    return; // diverged
-            //
+    return; // diverge all threads that dont have an output px
 
-  // UNFINISHED:
-  //__shared__ float patch[(KERNEL_N + 17)*(KERNEL_N + 17)];
-  // const int tid = threadIdx.x + 16 * threadIdx.y;
-  // const int block_offset = i_block + j_block * IMAGE_N;
-
-  // patch[threadIdx.x + ((KERNEL_N+17) * threadIdx.y)] = input[tid +
-  // block_offset]; tid += 256; if (tid < (KERNEL_N + 17)*(KERNEL_N + 17)){
-  //   patch[threadIdx.x + ((KERNEL_N+17) * threadIdx.y)] = input[tid +
-  //   block_offset];
+  __syncthreads();
+  // if (idx_start == 0) {
+  //   int n = patch_n * patch_n;
+  //   for (int i = 0; i < n + 3; i++) {
+  //     if (i >= n)
+  //       printf("(just beyond array):");
+  //     // printf("%d: %6.2f | %6.2f\n", i, patch[i], input[i]);
+  //   }
+  //   printf("\n");
   // }
-  //
 
   // build col
-  // int idx = (i * out_w + j) * (KH * KW);
-  int idx = 0;
+  idx = 0;
+  // idx = idx_start * col_h;
   for (int ki = 0; ki < KH; ++ki) {
     for (int kj = 0; kj < KW; ++kj) {
-      col[idx++] = input[(i + ki) * W + (j + kj)];
+      // colloc[idx++] = patch[((threadIdx.x + kj) * patch_n) + threadIdx.y +
+      // ki];
+      int ix = (blockIdx.x * ltpat_n + threadIdx.x + ki);
+      int iy = (blockIdx.y * ltpat_n + threadIdx.y + kj);
+      float iv = input[ix * W + iy];
+
+      int pi = threadIdx.x + ki;
+      int pj = threadIdx.y + kj;
+      float pv = patch[pj][pi];
+      colloc[idx++] = pv;
+
+      // if (ix != pi || iy != pj) {
+      //   printf("coord not match:%d,%d    %d,%d", ix, iy, pi, pj);
+      // }
+      if (pv != iv) {
+        printf("bad: pi,pj %d,%d = %d not %d\n", pi, pj, iv, pv);
+        printf("bad2: ix iy %d,%d\n", ix, iy);
+      } else {
+        // printf("good\n");
+      }
     }
   }
 
   // do matmul
   float sum = 0.0f;
-  int p = i * out_w + j;
   for (int k = 0; k < col_h; ++k) {
-    // sum += kernel[k] * col[k + p * col_h];
-    sum += kernel[k] * col[k];
+    // sum += kernel[k] * colloc[k + idx_start * col_h];
+    sum += kernel[k] * colloc[k];
   }
+
+  int p = i * out_w + j; // note: == idx start, but with block offset
   out[p] = sum;
 }
 
@@ -174,6 +202,7 @@ int main() {
   float *h_F = (float *)malloc(size_F);
   float *h_H = (float *)malloc(size_H);
   float *h_G_known_good = (float *)malloc(size_G);
+  h_G_known_good[0] = (float)0xDEADBEEF;
   float *h_G_comp = (float *)malloc(size_G);
 
   // Initialize image with random integer values [0, 255]
@@ -233,8 +262,19 @@ int main() {
   // TODO: make async later
   checkCuda(cudaMemcpy(d_F, h_F, size_F, cudaMemcpyHostToDevice), "Memcpy F");
   checkCuda(cudaMemcpy(d_H, h_H, size_H, cudaMemcpyHostToDevice), "Memcpy H");
+  const int out_h = IMAGE_N - KERNEL_N + 1;
+  const int out_w = out_h;
+  const int col_h = KERNEL_N * KERNEL_N;
+  const int col_w = out_h * out_w;
+  const size_t size_col = sizeof(float) * col_h * col_w;
+  float *d_col;
+  checkCuda(cudaMalloc((void **)&d_col, size_col), "Alloc col");
   im2col_par<<<dimGrid, dimBlock>>>(d_F, d_H, d_G, IMAGE_N, IMAGE_N, KERNEL_N,
                                     KERNEL_N);
+
+  // cudaDeviceSynchronize();
+  // mm_par<<<dimGrid, dimBlock>>>(d_col, d_H, d_G, IMAGE_N, IMAGE_N, KERNEL_N,
+  //                               KERNEL_N);
 
   checkCuda(cudaMemcpy(h_G_comp, d_G, size_G, cudaMemcpyDeviceToHost),
             "Memcpy G back to the host");
