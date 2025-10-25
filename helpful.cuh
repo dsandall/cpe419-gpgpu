@@ -32,7 +32,9 @@ __host__ void checkFloats(size_t num_floats, float *A, float *B) {
 __host__ void print_array(const float *arr, int n,
                           const char *label = "array") {
   printf("%s = [", label);
-  for (int i = 0; i < n; i++) {
+  const int zz = 0;
+  n = zz + n;
+  for (int i = zz; i < n; i++) {
     printf("%g", arr[i]);
     if (i < n - 1)
       printf(", ");

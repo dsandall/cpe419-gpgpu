@@ -42,7 +42,8 @@ int main() {
 
   // setup device memory
   float *d_arr;
-  checkCuda(cudaMalloc((void **)&d_arr, size_arr), "Alloc device array");
+  checkCuda(cudaMalloc((void **)&d_arr, size_arr * 2),
+            "Alloc device array"); // TODO: quick and dirty fix *2
   checkCuda(cudaMemcpy(d_arr, h_arr, size_arr, cudaMemcpyHostToDevice),
             "Memcpy arr");
 
@@ -90,89 +91,64 @@ int main() {
 
   // compare to device
 #ifdef DBG
-  print_array(h_arr, NUM_NUMS, "statrt");
-  print_array(h_res, NUM_NUMS, "ii");
-  print_array(h_result, NUM_NUMS);
+  print_array(h_arr, NUM_NUMS + 1, "statrt");
+  print_array(h_res, NUM_NUMS + 1, "ii");
+  print_array(h_result, NUM_NUMS + 1);
 #endif
 
   bool f = false;
+  int count = 0;
   for (int i = 0; i < NUM_NUMS; i++) {
     if (h_res[i] != h_result[i]) {
       f = true;
-      printf("fire and brimstone\n");
-      break;
+      count++;
     }
   }
   if (!f) {
     printf("yahoo!\n");
+  } else {
+    printf("fire and brimstone\n");
+    printf("failed %d\n", count);
   }
 #endif
 }
-
-const int BLOCK_SIZE = 512; // must match kernel’s design
+const int BLOCK_SIZE = 1024;
 const int ELEMS_PER_BLOCK = BLOCK_SIZE * 2;
 
-void blelloch_scan(float *d_data, int N) {
-  int numBlocks = (N + ELEMS_PER_BLOCK - 1) / ELEMS_PER_BLOCK;
-
-  printf("blelloch_scan call: numBlocks is %d\n", numBlocks);
-
-  // Allocate memory for per-block sums
-  float *d_block_sums = nullptr;
-  cudaMalloc(&d_block_sums, numBlocks * sizeof(float));
-
-  // --- Phase 1: local scans ---
-  block_scan<<<numBlocks, BLOCK_SIZE, ELEMS_PER_BLOCK * sizeof(float)>>>(
-      d_data, d_block_sums, N);
-
-  // --- Phase 2: recursively scan block sums ---
-  if (numBlocks > 1)
-    blelloch_scan(d_block_sums, numBlocks); // recursion on smaller array
-
-  // --- Phase 3: add scanned block offsets back ---
-  add_offsets<<<numBlocks, BLOCK_SIZE>>>(d_data, d_block_sums, N);
-
-  cudaFree(d_block_sums);
-}
-
-//////
-//////
-//////
-//////
-//////
-//////
-//////
-
+// -----------------------------------------------------
+// Block-level Blelloch exclusive scan
+// -----------------------------------------------------
 __global__ void block_scan(float *data, float *block_sums, int n) {
-  __shared__ float temp[ELEMS_PER_BLOCK];
-  int gid = blockIdx.x * blockDim.x * 2 + threadIdx.x;
+  __shared__ float temp[ELEMS_PER_BLOCK]; // size = ELEMS_PER_BLOCK
   int tid = threadIdx.x;
+  if (tid == 0)
+    printf("blok scan\n");
 
-  int start = blockIdx.x * ELEMS_PER_BLOCK;
-  int end = min(start + ELEMS_PER_BLOCK, n);
+  const int start = blockIdx.x * ELEMS_PER_BLOCK;
 
-  int idx0 = start + 2 * tid;
-  int idx1 = start + 2 * tid + 1;
+  // Load elements (zero-pad if past end)
+  for (int i = 0; i < 2; i++) {
+    const int id = start + 2 * tid + i;
+    temp[2 * tid + i] = (id < n) ? data[id] : 0.0f;
+  }
 
-  temp[2 * tid] = (idx0 < n) ? data[idx0] : 0.0f;
-  temp[2 * tid + 1] = (idx1 < n) ? data[idx1] : 0.0f;
-
-  __syncthreads();
-  // run your existing Blelloch scan on temp[]
-  for (int stride = 1; stride < blockDim.x * 2; stride <<= 1) {
+  // --- upsweep ---
+  for (int stride = 1; stride < ELEMS_PER_BLOCK; stride <<= 1) {
     __syncthreads();
     int idx = (tid + 1) * stride * 2 - 1;
-    if (idx < blockDim.x * 2)
+    if (idx < ELEMS_PER_BLOCK)
       temp[idx] += temp[idx - stride];
   }
 
-  if (tid == 0)
-    temp[blockDim.x * 2 - 1] = 0;
+  // clear last element (exclusive scan)
+  if (tid == 0 && blockIdx.x == 0)
+    temp[ELEMS_PER_BLOCK - 1] = 0.0f;
 
-  for (int stride = blockDim.x; stride > 0; stride >>= 1) {
+  // --- downsweep ---
+  for (int stride = ELEMS_PER_BLOCK / 2; stride > 0; stride >>= 1) {
     __syncthreads();
     int idx = (tid + 1) * stride * 2 - 1;
-    if (idx < blockDim.x * 2) {
+    if (idx < ELEMS_PER_BLOCK) {
       float t = temp[idx - stride];
       temp[idx - stride] = temp[idx];
       temp[idx] += t;
@@ -180,33 +156,79 @@ __global__ void block_scan(float *data, float *block_sums, int n) {
   }
   __syncthreads();
 
-  // write back
-  if (2 * gid < n)
-    data[2 * gid] = temp[2 * tid];
-  if (2 * gid + 1 < n)
-    data[2 * gid + 1] = temp[2 * tid + 1];
+  // Write back to global memory
+  //
+  for (int i = 0; i < 2; i++) {
+    const int id = start + 2 * tid + i;
+    if (id < n)
+      data[id] = temp[2 * tid + i];
+  }
 
-  // store block total
+  const int idx0 = start + 2 * tid;
+  const int idx1 = start + 2 * tid + 1;
+
+  // if there is another , each block sets up carry
+  // Write total block sums
   if (block_sums && tid == 0) {
-    int last = end - start - 1;
-    int second_last = max(0, last - 1);
-    block_sums[blockIdx.x] = temp[last] + temp[second_last];
+    const int last_valid = min(ELEMS_PER_BLOCK, n - start) - 1;
+
+    const float iv = (idx1 < n) ? data[idx1] : ((idx0 < n) ? data[idx0] : 0.0f);
+    const float val = temp[last_valid] + iv;
+
+    block_sums[blockIdx.x] = val;
+    printf("last_valid %d\n", last_valid);
+    printf("block_sums[%d] = %f;\n", blockIdx.x, val);
   }
 }
-__global__ void add_offsets(float *data, float *block_sums, int n) {
-  if (blockIdx.x == 0)
-    return; // first block has no offset
 
-  int start = blockIdx.x * ELEMS_PER_BLOCK;
-  int end = min(start + ELEMS_PER_BLOCK, n);
+// -----------------------------------------------------
+// Add scanned block offsets to each block’s data
+// -----------------------------------------------------
+__global__ void add_offsets(float *data, const float *block_offsets, int n) {
+  int block = blockIdx.x;
+  int tid = threadIdx.x;
 
-  int idx0 = start + 2 * threadIdx.x;
-  int idx1 = start + 2 * threadIdx.x + 1;
+  int start = block * ELEMS_PER_BLOCK;
+  int gid0 = start + 2 * tid;
+  int gid1 = gid0 + 1;
 
-  float offset = block_sums[blockIdx.x - 1];
+  float offset = (block > 0) ? block_offsets[block - 1] : 0.0f;
 
-  if (idx0 < n)
-    data[idx0] += offset;
-  if (idx1 < n)
-    data[idx1] += offset;
+  if (gid0 < n)
+    data[gid0] += offset;
+  if (gid1 < n)
+    data[gid1] += offset;
+}
+
+// -----------------------------------------------------
+// Recursive Blelloch scan driver
+// -----------------------------------------------------
+void blelloch_scan(float *d_data, int N) {
+  const int numBlocks = (N + ELEMS_PER_BLOCK - 1) / ELEMS_PER_BLOCK;
+#ifdef DBG
+  printf("blelloch_scan called w %p ,, %d \n", d_data, N);
+  printf("numblocks %d \n", numBlocks);
+#endif
+
+  float *d_block_sums = nullptr;
+  if (numBlocks > 1) {
+    cudaMalloc(&d_block_sums, (numBlocks + 1) * sizeof(float));
+    cudaMemset(&d_block_sums, 0, (numBlocks + 1) * sizeof(float));
+  }
+  // Phase 1: scan each block locally
+  block_scan<<<numBlocks, BLOCK_SIZE, ELEMS_PER_BLOCK * sizeof(float)>>>(
+      d_data, d_block_sums, N);
+
+  // Phase 2: recursively scan block sums
+  if (numBlocks > 1) {
+    cudaDeviceSynchronize();
+    blelloch_scan(d_block_sums, numBlocks);
+  }
+
+  // Phase 3: add scanned block offsets back
+  add_offsets<<<numBlocks, BLOCK_SIZE>>>(d_data, (const float *)d_block_sums,
+                                         N);
+  cudaDeviceSynchronize();
+
+  cudaFree(d_block_sums);
 }

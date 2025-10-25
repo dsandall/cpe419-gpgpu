@@ -1,11 +1,5 @@
 NUM_NUMS = 1000000
-spread mode
 starting timer ...
-time elapsed(ms, parallel): 0.266208
-time elapsed(ms, sequential): 1.133536
-yahoo!
-NUM_NUMS = 1000000
-starting timer ...
-time elapsed(ms, parallel): 0.276800
-time elapsed(ms, sequential): 1.126944
+time elapsed(ms, parallel): 0.272512
+time elapsed(ms, sequential): 1.129536
 yahoo!
