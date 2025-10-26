@@ -6,7 +6,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define NUM_NUMS 1000000
+#ifndef NUM_NUMS
+#define NUM_NUMS 10000000
+#endif
 #define COMPARE_A
 #define COMPARE_B
 

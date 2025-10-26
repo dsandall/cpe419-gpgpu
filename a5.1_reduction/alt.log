@@ -1,5 +1,80 @@
+NUM_NUMS = 10000000
+starting timer ...
+time elapsed(ms, parallel): 0.689536
+time elapsed(ms, sequential): 15.964768
+yahoo!
+NUM_NUMS = 10000000
+starting timer ...
+time elapsed(ms, parallel): 0.694016
+time elapsed(ms, sequential): 11.350976
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.679680
+time elapsed(ms, sequential): 11.260256
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.680704
+time elapsed(ms, sequential): 11.654528
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.679616
+time elapsed(ms, sequential): 11.250752
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.701248
+time elapsed(ms, sequential): 11.304224
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.691552
+time elapsed(ms, sequential): 11.425440
+yahoo!
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.688864
+time elapsed(ms, sequential): 11.294944
+yahoo!
+NUM_NUMS = 1000000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 36.083874
+time elapsed(ms, sequential): 1742.713745
+fire and brimstone
+NUM_NUMS = 100000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 3.928416
+time elapsed(ms, sequential): 195.959808
+fire and brimstone
+NUM_NUMS = 10000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.682496
+time elapsed(ms, sequential): 12.569952
+yahoo!
+NUM_NUMS = 1000000
+spread mode
+starting timer ...
+time elapsed(ms, parallel): 0.269856
+time elapsed(ms, sequential): 1.137920
+yahoo!
+NUM_NUMS = 10000000
+starting timer ...
+time elapsed(ms, parallel): 0.682176
+time elapsed(ms, sequential): 11.306624
+yahoo!
 NUM_NUMS = 1000000
 starting timer ...
-time elapsed(ms, parallel): 0.272512
-time elapsed(ms, sequential): 1.129536
+time elapsed(ms, parallel): 0.269056
+time elapsed(ms, sequential): 1.133088
 yahoo!
