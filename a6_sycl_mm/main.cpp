@@ -24,7 +24,7 @@ void query_mem(queue &q) {
 
 size_t get_safe_device_mem(const sycl::device &dev,
                            float safety_factor = 0.8f) {
-  size_t total_mem = dev.get_info<sycl::info::device::max_mem_alloc_size>();
+  size_t total_mem = dev.get_info<sycl::info::device::local_mem_size>();
   return static_cast<size_t>(total_mem * safety_factor);
 }
 
@@ -113,16 +113,20 @@ void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc) {
   free(d_c, q);
 }
 
-void mm_sycl_tiled(sycl::queue &q, float *fa, float *fb, float *fc) {
-  float safety_factor = 0.4f;
+void mm_sycl_tiled(sycl::queue &q, float *fa, float *fb, float *fc, size_t N) {
 
   sycl::device dev = q.get_device();
-  size_t safe_mem = get_safe_device_mem(dev, safety_factor);
+  size_t safe_mem = get_safe_device_mem(dev, 0.4f);
 
   size_t tile_h, tile_w;
   compute_tile_dims(safe_mem, Width, tile_h, tile_w);
 
+  tile_h = 800;
+  tile_w = 800;
   std::cout << "Tiling: " << tile_h << "x" << tile_w << "\n";
+
+  int Height = N;
+  int Width = N;
 
   // Process tiles
   for (size_t row0 = 0; row0 < Height; row0 += tile_h) {
@@ -131,26 +135,28 @@ void mm_sycl_tiled(sycl::queue &q, float *fa, float *fb, float *fc) {
       size_t w = std::min(tile_w, Width - col0);
 
       // Wrap tile buffers
-      buffer<float, 1> buf_a(fa + row0 * Width, range<1>(h * Width));
-      buffer<float, 1> buf_b(fb + col0, range<1>(Width * w));
-      buffer<float, 1> buf_c(fc + row0 * Width + col0, range<1>(h * w));
+      {
+        buffer<float, 1> buf_a(fa + row0 * Width, range<1>(h * Width));
+        buffer<float, 1> buf_b(fb + col0, range<1>(Width * w));
+        buffer<float, 1> buf_c(fc + row0 * Width + col0, range<1>(h * w));
 
-      q.submit([&](sycl::handler &hndl) {
-        auto a = buf_a.get_access<sycl::access::mode::read>(hndl);
-        auto b = buf_b.get_access<sycl::access::mode::read>(hndl);
-        auto c = buf_c.get_access<sycl::access::mode::write>(hndl);
+        q.submit([&](sycl::handler &hndl) {
+          auto a = buf_a.get_access<sycl::access::mode::read>(hndl);
+          auto b = buf_b.get_access<sycl::access::mode::read>(hndl);
+          auto c = buf_c.get_access<sycl::access::mode::write>(hndl);
 
-        hndl.parallel_for(sycl::range<1>(h), [=](sycl::id<1> row_id) {
-          size_t row = row_id[0];
-          for (size_t col = 0; col < w; col++) {
-            float Pvalue = 0;
-            for (size_t k = 0; k < Width; k++) {
-              Pvalue += a[row * Width + k] * b[k * w + col];
+          hndl.parallel_for(sycl::range<1>(h), [=](sycl::id<1> row_id) {
+            size_t row = row_id[0];
+            for (size_t col = 0; col < w; col++) {
+              float Pvalue = 0;
+              for (size_t k = 0; k < Width; k++) {
+                Pvalue += a[row * Width + k] * b[k * w + col];
+              }
+              c[row * w + col] = Pvalue;
             }
-            c[row * w + col] = Pvalue;
-          }
-        });
-      }); // submit
+          });
+        }); // submit
+      }
 
       q.wait(); // ensure each one finishes
     }
@@ -176,38 +182,38 @@ int main() {
     x = dist(gen);
 
   std::vector<float> C_cpu(Width * Height);
-  std::vector<float> C_sycl(Width * Height);
-  std::vector<float> C_usm(Width * Height);
+  // std::vector<float> C_sycl(Width * Height);
+  // std::vector<float> C_usm(Width * Height);
   std::vector<float> C_tiled(Width * Height);
 
   // tiled
   auto t7 = time();
-  mm_sycl_tiled(q, A.data(), B.data(), C_tiled.data());
+  mm_sycl_tiled(q, A.data(), B.data(), C_tiled.data(), Height);
   q.wait();
   auto t8 = time();
   std::cout << "SYCL tiled time: "
             << std::chrono::duration<double, std::milli>(t8 - t7).count()
             << " ms\n";
 
-  if (Width < 4000) {
-    // SYCL buffer
-    auto t3 = time();
-    mm_sycl(q, A.data(), B.data(), C_sycl.data());
-    q.wait();
-    auto t4 = time();
-    std::cout << "SYCL buffer mm time: "
-              << std::chrono::duration<double, std::milli>(t4 - t3).count()
-              << " ms\n";
+  // if (Width < 4000) {
+  //   // SYCL buffer
+  //   auto t3 = time();
+  //   mm_sycl(q, A.data(), B.data(), C_sycl.data());
+  //   q.wait();
+  //   auto t4 = time();
+  //   std::cout << "SYCL buffer mm time: "
+  //             << std::chrono::duration<double, std::milli>(t4 - t3).count()
+  //             << " ms\n";
 
-    // SYCL USM
-    auto t5 = time();
-    mm_sycl_usm(q, A.data(), B.data(), C_usm.data());
-    q.wait();
-    auto t6 = time();
-    std::cout << "SYCL USM mm time: "
-              << std::chrono::duration<double, std::milli>(t6 - t5).count()
-              << " ms\n";
-  }
+  //   // SYCL USM
+  //   auto t5 = time();
+  //   mm_sycl_usm(q, A.data(), B.data(), C_usm.data());
+  //   q.wait();
+  //   auto t6 = time();
+  //   std::cout << "SYCL USM mm time: "
+  //             << std::chrono::duration<double, std::milli>(t6 - t5).count()
+  //             << " ms\n";
+  // }
 
   // CPU
   auto t1 = time();
@@ -229,10 +235,10 @@ int main() {
     return true;
   };
 
-  std::cout << "SYCL buffer matches CPU? "
-            << (check(C_sycl, "SYCL buffer") ? "YES" : "NO") << "\n";
-  std::cout << "SYCL USM matches CPU? "
-            << (check(C_usm, "SYCL USM") ? "YES" : "NO") << "\n";
+  // std::cout << "SYCL buffer matches CPU? "
+  //           << (check(C_sycl, "SYCL buffer") ? "YES" : "NO") << "\n";
+  // std::cout << "SYCL USM matches CPU? "
+  //           << (check(C_usm, "SYCL USM") ? "YES" : "NO") << "\n";
   std::cout << "tiled matches CPU? "
             << (check(C_tiled, "SYCL tiled") ? "YES" : "NO") << "\n";
   return 0;
