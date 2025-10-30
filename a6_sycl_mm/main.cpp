@@ -3,7 +3,7 @@
 #include <sycl/sycl.hpp>
 using namespace sycl;
 
-constexpr size_t Width = 1000;
+constexpr size_t Width = 1024;
 constexpr size_t Height = Width;
 
 #include <CL/sycl.hpp>
@@ -82,30 +82,30 @@ void mm_sycl(queue &q, float *fa, float *fb, float *fc) {
 }
 
 // note the lack of the buffer code block structure
-void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc) {
+void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc, int NW, int NH) {
   // Allocate device memory for matrices
-  float *d_a = malloc_device<float>(Width * Height, q);
-  float *d_b = malloc_device<float>(Width * Height, q);
-  float *d_c = malloc_device<float>(Width * Height, q);
+  float *d_a = malloc_device<float>(NW * NH, q);
+  float *d_b = malloc_device<float>(NW * NH, q);
+  float *d_c = malloc_device<float>(NW * NH, q);
 
   // Copy host data to device
-  q.memcpy(d_a, fa, sizeof(float) * Width * Height).wait();
-  q.memcpy(d_b, fb, sizeof(float) * Width * Height).wait();
+  q.memcpy(d_a, fa, sizeof(float) * NW * NH).wait();
+  q.memcpy(d_b, fb, sizeof(float) * NW * NH).wait();
 
   // Launch kernel: parallelize outer loop (row)
-  q.parallel_for(range<1>(Height), [=](id<1> row_id) {
+  q.parallel_for(range<1>(NH), [=](id<1> row_id) {
      int row = row_id[0];
-     for (int col = 0; col < Width; col++) {
+     for (int col = 0; col < NW; col++) {
        float Pvalue = 0;
-       for (int k = 0; k < Width; k++) {
-         Pvalue += d_a[row * Width + k] * d_b[k * Width + col];
+       for (int k = 0; k < NW; k++) {
+         Pvalue += d_a[row * NW + k] * d_b[k * NW + col];
        }
-       d_c[row * Width + col] = Pvalue;
+       d_c[row * NW + col] = Pvalue;
      }
    }).wait(); // wait for completion
 
   // Copy results back to host
-  q.memcpy(fc, d_c, sizeof(float) * Width * Height).wait();
+  q.memcpy(fc, d_c, sizeof(float) * NW * NH).wait();
 
   // Free device memory
   free(d_a, q);
@@ -113,55 +113,49 @@ void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc) {
   free(d_c, q);
 }
 
-void mm_sycl_tiled(sycl::queue &q, float *fa, float *fb, float *fc, size_t N) {
+void mm_sycl_tiled(queue &q, float *A, float *B, float *C, int N) {
+  int max_tile = 512; // or based on available memory
 
-  sycl::device dev = q.get_device();
-  size_t safe_mem = get_safe_device_mem(dev, 0.4f);
+  if (N <= max_tile) {
+    mm_sycl_usm(q, A, B, C, N, N);
+    return;
+  }
 
-  size_t tile_h, tile_w;
-  compute_tile_dims(safe_mem, Width, tile_h, tile_w);
+  int half = N / 2;
+  // assume row-major layout
 
-  tile_h = 800;
-  tile_w = 800;
-  std::cout << "Tiling: " << tile_h << "x" << tile_w << "\n";
+  // pointers to sub-blocks of A, B, and C
+  float *A11 = A;
+  float *A12 = A + half;
+  float *A21 = A + half * N;
+  float *A22 = A + half * N + half;
 
-  int Height = N;
-  int Width = N;
+  float *B11 = B;
+  float *B12 = B + half;
+  float *B21 = B + half * N;
+  float *B22 = B + half * N + half;
 
-  // Process tiles
-  for (size_t row0 = 0; row0 < Height; row0 += tile_h) {
-    size_t h = std::min(tile_h, Height - row0);
-    for (size_t col0 = 0; col0 < Width; col0 += tile_w) {
-      size_t w = std::min(tile_w, Width - col0);
+  float *C11 = C;
+  float *C12 = C + half;
+  float *C21 = C + half * N;
+  float *C22 = C + half * N + half;
 
-      // Wrap tile buffers
-      {
-        buffer<float, 1> buf_a(fa + row0 * Width, range<1>(h * Width));
-        buffer<float, 1> buf_b(fb + col0, range<1>(Width * w));
-        buffer<float, 1> buf_c(fc + row0 * Width + col0, range<1>(h * w));
+  // Recursively compute:
+  // C11 = A11*B11 + A12*B21
+  mm_sycl_tiled(q, A11, B11, C11, half);
+  mm_sycl_tiled(q, A12, B21, C11, half);
 
-        q.submit([&](sycl::handler &hndl) {
-          auto a = buf_a.get_access<sycl::access::mode::read>(hndl);
-          auto b = buf_b.get_access<sycl::access::mode::read>(hndl);
-          auto c = buf_c.get_access<sycl::access::mode::write>(hndl);
+  // C12 = A11*B12 + A12*B22
+  mm_sycl_tiled(q, A11, B12, C12, half);
+  mm_sycl_tiled(q, A12, B22, C12, half);
 
-          hndl.parallel_for(sycl::range<1>(h), [=](sycl::id<1> row_id) {
-            size_t row = row_id[0];
-            for (size_t col = 0; col < w; col++) {
-              float Pvalue = 0;
-              for (size_t k = 0; k < Width; k++) {
-                Pvalue += a[row * Width + k] * b[k * w + col];
-              }
-              c[row * w + col] = Pvalue;
-            }
-          });
-        }); // submit
-      }
+  // C21 = A21*B11 + A22*B21
+  mm_sycl_tiled(q, A21, B11, C21, half);
+  mm_sycl_tiled(q, A22, B21, C21, half);
 
-      q.wait(); // ensure each one finishes
-    }
-  } // tiles
-  // q.wait();
+  // C22 = A21*B12 + A22*B22
+  mm_sycl_tiled(q, A21, B12, C22, half);
+  mm_sycl_tiled(q, A22, B22, C22, half);
 }
 
 inline auto time() { return std::chrono::high_resolution_clock::now(); }
