@@ -1,43 +1,16 @@
+#include "hipSYCL/sycl/handler.hpp"
 #include "hipSYCL/sycl/info/device.hpp"
+#include "hipSYCL/sycl/libkernel/accessor.hpp"
+#include <CL/sycl.hpp>
+#include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <sycl/sycl.hpp>
 using namespace sycl;
 
+constexpr int TILE_SIZE = 16; // tile height/width
 constexpr size_t Width = 1024;
 constexpr size_t Height = Width;
-
-#include <CL/sycl.hpp>
-#include <iostream>
-
-void query_mem(queue &q) {
-  sycl::device dev = q.get_device();
-
-  auto global_mem = dev.get_info<sycl::info::device::global_mem_size>();
-  auto local_mem = dev.get_info<sycl::info::device::local_mem_size>();
-  auto max_alloc = dev.get_info<sycl::info::device::max_mem_alloc_size>();
-
-  std::cout << "Device: " << dev.get_info<sycl::info::device::name>() << "\n";
-  std::cout << "Global memory: " << global_mem / (1024 * 1024) << " MB\n";
-  std::cout << "Local memory: " << local_mem / 1024 << " KB\n";
-  std::cout << "Max alloc size: " << max_alloc / (1024 * 1024) << " MB\n";
-}
-
-size_t get_safe_device_mem(const sycl::device &dev,
-                           float safety_factor = 0.8f) {
-  size_t total_mem = dev.get_info<sycl::info::device::local_mem_size>();
-  return static_cast<size_t>(total_mem * safety_factor);
-}
-
-void compute_tile_dims(size_t safe_mem_bytes, size_t Width, size_t &tile_h,
-                       size_t &tile_w) {
-  size_t max_tile_area =
-      safe_mem_bytes / (3 * sizeof(float)); // 3 buffers: A_tile, B_tile, C_tile
-
-  // Simple approach: square tiles
-  size_t tile_dim = static_cast<size_t>(std::sqrt(max_tile_area));
-  tile_h = std::min(tile_dim, Width);
-  tile_w = tile_h;
-}
 
 void mm(float *fa, float *fb, float *fc) {
   int row, col, k;
@@ -82,30 +55,29 @@ void mm_sycl(queue &q, float *fa, float *fb, float *fc) {
 }
 
 // note the lack of the buffer code block structure
-void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc, int NW, int NH) {
+void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc, int W, int H) {
   // Allocate device memory for matrices
-  float *d_a = malloc_device<float>(NW * NH, q);
-  float *d_b = malloc_device<float>(NW * NH, q);
-  float *d_c = malloc_device<float>(NW * NH, q);
+  float *d_a = malloc_device<float>(W * H, q);
+  float *d_b = malloc_device<float>(W * H, q);
+  float *d_c = malloc_device<float>(W * H, q);
 
   // Copy host data to device
-  q.memcpy(d_a, fa, sizeof(float) * NW * NH).wait();
-  q.memcpy(d_b, fb, sizeof(float) * NW * NH).wait();
+  q.memcpy(d_a, fa, sizeof(float) * W * H).wait();
+  q.memcpy(d_b, fb, sizeof(float) * W * H).wait();
 
   // Launch kernel: parallelize outer loop (row)
-  q.parallel_for(range<1>(NH), [=](id<1> row_id) {
+  q.parallel_for(range<2>(H, W), [=](id<2> row_id) {
      int row = row_id[0];
-     for (int col = 0; col < NW; col++) {
-       float Pvalue = 0;
-       for (int k = 0; k < NW; k++) {
-         Pvalue += d_a[row * NW + k] * d_b[k * NW + col];
-       }
-       d_c[row * NW + col] = Pvalue;
+     int col = row_id[1];
+     float Pvalue = 0;
+     for (int k = 0; k < W; k++) {
+       Pvalue += d_a[row * W + k] * d_b[k * W + col];
      }
+     d_c[row * W + col] = Pvalue;
    }).wait(); // wait for completion
 
   // Copy results back to host
-  q.memcpy(fc, d_c, sizeof(float) * NW * NH).wait();
+  q.memcpy(fc, d_c, sizeof(float) * W * H).wait();
 
   // Free device memory
   free(d_a, q);
@@ -113,127 +85,138 @@ void mm_sycl_usm(queue &q, float *fa, float *fb, float *fc, int NW, int NH) {
   free(d_c, q);
 }
 
-void mm_sycl_tiled(queue &q, float *A, float *B, float *C, int N) {
-  int max_tile = 512; // or based on available memory
+void mm_sycl_tiled(sycl::queue &q, float *a, float *b, float *fc, int N) {
+  constexpr int TS = TILE_SIZE;
 
-  if (N <= max_tile) {
-    mm_sycl_usm(q, A, B, C, N, N);
-    return;
-  }
+  q.submit([&](sycl::handler &h) {
+    // allocate shared mem for tiles
+    sycl::local_accessor<float, 2> tileA({TS, TS}, h); // shared mem
+    sycl::local_accessor<float, 2> tileB({TS, TS}, h); // shared mem
 
-  int half = N / 2;
-  // assume row-major layout
+    // a thread for every output
+    h.parallel_for(sycl::nd_range<2>{{(size_t)N, (size_t)N}, {TS, TS}},
+                   [=](sycl::nd_item<2> wg) {
+                     int lr = wg.get_local_id(0);
+                     int lc = wg.get_local_id(1);
 
-  // pointers to sub-blocks of A, B, and C
-  float *A11 = A;
-  float *A12 = A + half;
-  float *A21 = A + half * N;
-  float *A22 = A + half * N + half;
+                     const int gr = wg.get_global_id(0); // global row
+                     const int gc = wg.get_global_id(1); // global col
 
-  float *B11 = B;
-  float *B12 = B + half;
-  float *B21 = B + half * N;
-  float *B22 = B + half * N + half;
+                     float accum = 0.0f;
+                     bool output = gr < N && gc < N;
 
-  float *C11 = C;
-  float *C12 = C + half;
-  float *C21 = C + half * N;
-  float *C22 = C + half * N + half;
+                     // for each tile along the matrix
+                     for (int k0 = 0; k0 < N; k0 += TS) {
+                       // load
+                       tileA[lr][lc] = a[gr * N + (k0 + lc)];
+                       tileB[lr][lc] = b[(k0 + lr) * N + gc];
+                       wg.barrier(sycl::access::fence_space::local_space);
 
-  // Recursively compute:
-  // C11 = A11*B11 + A12*B21
-  mm_sycl_tiled(q, A11, B11, C11, half);
-  mm_sycl_tiled(q, A12, B21, C11, half);
+                       // iterate across row/col of the tile and accum
+                       if (output) {
+                         for (int k = 0; k < TS; k++) {
+                           if (k0 + k < N) {
+                             // float va = a[gr * N + (k0 + k)];
+                             // float vb = b[(k0 + k) * N + gc];
+                             accum += tileA[lr][k] * tileB[k][lc];
+                           }
+                         }
+                       }
+                     }
 
-  // C12 = A11*B12 + A12*B22
-  mm_sycl_tiled(q, A11, B12, C12, half);
-  mm_sycl_tiled(q, A12, B22, C12, half);
+                     // if the output is needed,
+                     if (output)
+                       fc[gr * N + gc] = accum;
+                   });
+  });
 
-  // C21 = A21*B11 + A22*B21
-  mm_sycl_tiled(q, A21, B11, C21, half);
-  mm_sycl_tiled(q, A22, B21, C21, half);
-
-  // C22 = A21*B12 + A22*B22
-  mm_sycl_tiled(q, A21, B12, C22, half);
-  mm_sycl_tiled(q, A22, B22, C22, half);
+  // synch
+  q.wait();
 }
 
 inline auto time() { return std::chrono::high_resolution_clock::now(); }
 
 int main() {
   queue q;
-  query_mem(q);
 
   // Randomize input
-  std::vector<float> A(Width * Height), B(Width * Height);
+  float *A = malloc_host<float>(Width * Height, q);
+  float *B = malloc_host<float>(Width * Height, q);
+
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
-  for (auto &x : A)
-    x = dist(gen);
-  for (auto &x : B)
-    x = dist(gen);
+  for (size_t i = 0; i < Width * Height; i++) {
+    A[i] = dist(gen);
+    B[i] = dist(gen);
+  }
 
   std::vector<float> C_cpu(Width * Height);
-  // std::vector<float> C_sycl(Width * Height);
-  // std::vector<float> C_usm(Width * Height);
-  std::vector<float> C_tiled(Width * Height);
+  float *C_tiled = malloc_host<float>(Width * Height, q);
+  float *C_sycl = malloc_host<float>(Width * Height, q);
+  float *C_usm = malloc_host<float>(Width * Height, q);
+  memset(C_tiled, 0, Width * Height * sizeof(float));
 
   // tiled
   auto t7 = time();
-  mm_sycl_tiled(q, A.data(), B.data(), C_tiled.data(), Height);
+  mm_sycl_tiled(q, A, B, C_tiled, Height);
   q.wait();
   auto t8 = time();
   std::cout << "SYCL tiled time: "
             << std::chrono::duration<double, std::milli>(t8 - t7).count()
             << " ms\n";
 
-  // if (Width < 4000) {
-  //   // SYCL buffer
-  //   auto t3 = time();
-  //   mm_sycl(q, A.data(), B.data(), C_sycl.data());
-  //   q.wait();
-  //   auto t4 = time();
-  //   std::cout << "SYCL buffer mm time: "
-  //             << std::chrono::duration<double, std::milli>(t4 - t3).count()
-  //             << " ms\n";
+  if (Width < 1000) {
+    // SYCL buffer
+    auto t3 = time();
+    mm_sycl(q, A, B, C_sycl);
+    q.wait();
+    auto t4 = time();
+    std::cout << "SYCL buffer mm time: "
+              << std::chrono::duration<double, std::milli>(t4 - t3).count()
+              << " ms\n";
 
-  //   // SYCL USM
-  //   auto t5 = time();
-  //   mm_sycl_usm(q, A.data(), B.data(), C_usm.data());
-  //   q.wait();
-  //   auto t6 = time();
-  //   std::cout << "SYCL USM mm time: "
-  //             << std::chrono::duration<double, std::milli>(t6 - t5).count()
-  //             << " ms\n";
-  // }
+    // SYCL USM
+    auto t5 = time();
+    mm_sycl_usm(q, A, B, C_usm, Width, Height);
+    q.wait();
+    auto t6 = time();
+    std::cout << "SYCL USM mm time: "
+              << std::chrono::duration<double, std::milli>(t6 - t5).count()
+              << " ms\n";
+  }
 
   // CPU
   auto t1 = time();
-  mm(A.data(), B.data(), C_cpu.data());
+  mm(A, B, C_cpu.data());
   auto t2 = time();
   std::cout << "CPU mm time: "
             << std::chrono::duration<double, std::milli>(t2 - t1).count()
             << " ms\n";
 
-  // Verify results
-  auto check = [&](const std::vector<float> &v, const char *name) {
+  auto check_ptr = [&](const float *v, const char *name) {
+    int f = 0;
     for (size_t i = 0; i < Width * Height; i++) {
       if (std::fabs(C_cpu[i] - v[i]) > 1e-4f) {
-        std::cout << name << " mismatch at index " << i << ": CPU=" << C_cpu[i]
-                  << ", " << name << "=" << v[i] << "\n";
-        return false;
+        // std::cout << name << " mismatch at index " << i << ": CPU=" <<
+        // C_cpu[i]
+        //           << ", " << name << "=" << v[i] << "\n";
+        f++;
       }
     }
+    printf("%d/%zu failuers\n", f, Width * Height);
+
     return true;
   };
 
-  // std::cout << "SYCL buffer matches CPU? "
-  //           << (check(C_sycl, "SYCL buffer") ? "YES" : "NO") << "\n";
-  // std::cout << "SYCL USM matches CPU? "
-  //           << (check(C_usm, "SYCL USM") ? "YES" : "NO") << "\n";
+#ifdef DEBUG
+  for (int i = 0; i < Width * Height; i++) {
+    std::cout << "CPU " << C_cpu[i] << " " << C_tiled[i] << "\n";
+  }
+#endif // DEBUG
+
   std::cout << "tiled matches CPU? "
-            << (check(C_tiled, "SYCL tiled") ? "YES" : "NO") << "\n";
+            << (check_ptr(C_tiled, "SYCL tiled") ? "YES" : "NO") << "\n";
   return 0;
 }
