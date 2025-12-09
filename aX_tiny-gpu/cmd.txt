@@ -1,0 +1,1 @@
+cgeist /workspace/main.c -function=matmul -S -o /workspace/main.mlir

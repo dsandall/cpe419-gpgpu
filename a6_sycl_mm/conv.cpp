@@ -10,7 +10,7 @@ using namespace sycl;
 
 inline auto time() { return std::chrono::high_resolution_clock::now(); }
 constexpr int TILE_SIZE = 16; // tile height/width
-constexpr size_t Width = 10000;
+constexpr size_t Width = 512;
 constexpr size_t Height = Width;
 constexpr size_t W = Width;
 constexpr size_t H = Width;

@@ -1,0 +1,27 @@
+\documentclass{article}
+
+% Page layout
+\usepackage[margin=1in]{geometry}
+
+% Code formatting (minted)
+\usepackage{minted}
+\usemintedstyle{friendly}  % or: bw, colorful, monokai, perldoc, etc.
+
+\title{C Code Listing}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Source Code}
+
+\inputminted[
+    fontsize=\small,
+    breaklines,
+    linenos,
+    frame=lines
+]{c}{std_dev.c}
+
+\end{document}
+
