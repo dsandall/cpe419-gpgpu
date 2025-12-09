@@ -1,6 +1,6 @@
 import cupy as cp
 import numpy as np
-import sys
+import time
 
 
 # ---------------------------------------
@@ -59,24 +59,29 @@ def fractional_knapsack_cuda(values, weights, capacity):
     return total_value
 
 
+def runner(v, w, c):
+    start = time.perf_counter()
+    res = fractional_knapsack_cuda(v, w, c)
+    end = time.perf_counter()
+    print(f"Max: {res} , Elapsed: {end - start:.6f} seconds")
+
+
 # ---------------------------------------
 # entry point:
 # ---------------------------------------
 values = np.array([60, 100, 120], dtype=np.float32)
 weights = np.array([10, 20, 30], dtype=np.float32)
 capacity = 50
+runner(values, weights, capacity)
 
-print("Max value:", fractional_knapsack_cuda(values, weights, capacity))
 np.random.seed(42)
 
-# 500 element test case
 values_500 = np.random.randint(1, 101, size=500).astype(np.float32)
 weights_500 = np.random.randint(1, 50, size=500).astype(np.float32)
 capacity_500 = 10000.0
-print("Max value:", fractional_knapsack_cuda(values_500, weights_500, capacity_500))
+runner(values_500, weights_500, capacity_500)
 
-# 1000 element test case
 values_1000 = np.random.randint(1, 101, size=5000000).astype(np.float32)
 weights_1000 = np.random.randint(1, 50, size=5000000).astype(np.float32)
 capacity_1000 = 600000.0
-print("Max value:", fractional_knapsack_cuda(values_1000, weights_1000, capacity_1000))
+runner(values_1000, weights_1000, capacity_1000)

@@ -7,19 +7,67 @@
 \usepackage{minted}
 \usemintedstyle{friendly}  % or: bw, colorful, monokai, perldoc, etc.
 
-\title{OpenMP Standard Deviation}
-\author{}
+\title{Fractional Knapsack Implementations}
+\author{Dylan J. Sandall}
 \date{}
 
 \begin{document}
 \maketitle
+\noindent\textbf{Source repository:} \href{https://github.com/dsandall/cpe419-gpgpu}{github.com/dsandall/cpe419-gpgpu}\\[1em]
 
+\section{Cuda Python}
+
+\subsection*{Program Output}
+\begin{minted}[fontsize=\small,breaklines]{text}
+Max: 240.0 , Elapsed: 0.265201 seconds
+Max: 24198.172413793105 , Elapsed: 0.009518 seconds
+Max: 17909513.0 , Elapsed: 5.316809 seconds
+\end{minted}
+
+\subsection*{Source Code}
 \inputminted[
     fontsize=\small,
     breaklines,
     linenos,
     frame=lines
-]{c}{std_dev.c}
+]{python}{knapsack_python.py}
 
+
+
+\section{Cuda C}
+
+\subsection*{Program Output}
+\begin{minted}[fontsize=\small,breaklines]{text}
+Small test max value: 240 (time: 0.139851 s)
+500-element test max value: 7606.43 (time: 0.000317752 s)
+5e+06-element test max value: 1.77569e+07 (time: 0.0398081 s)
+\end{minted}
+
+\subsection*{Source Code}
+\inputminted[
+    fontsize=\small,
+    breaklines,
+    linenos,
+    frame=lines
+]{python}{knapsack_cuda.cu}
+
+
+
+\section{Sycl}
+
+\subsection*{Program Output}
+\begin{minted}[fontsize=\small,breaklines]{text}
+Small test max value: 240 (time: 0.392049 s)
+500-element test max value: 7606.43 (time: 0.156845 s)
+5e+06-element test max value: 4.25978e+06 (time: 11.2837 s)
+\end{minted}
+
+\subsection*{Source Code}
+\inputminted[
+    fontsize=\small,
+    breaklines,
+    linenos,
+    frame=lines
+]{python}{knapsack_sycl.cpp}
 \end{document}
 

@@ -77,6 +77,47 @@ float fractional_knapsack_cuda(const std::vector<float> &values,
 
   return total_value;
 }
+void gen_runner(float (*funcPtr)(const std::vector<float> &values,
+                                 const std::vector<float> &weights,
+                                 float capacity),
+                float n, float cap) {
+
+  std::srand(42); // reproducible random numbers
+
+  // --- 500-element test case ---
+  std::vector<float> values1(n), weights1(n);
+  for (size_t i = 0; i < n; i++) {
+    values1[i] = static_cast<float>(std::rand() % 100 + 1);
+    weights1[i] = static_cast<float>(std::rand() % 50 + 1);
+  }
+
+  auto start = std::chrono::high_resolution_clock::now();
+  float result1 = funcPtr(values1, weights1, cap);
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << n << "-element test max value: " << result1
+            << " (time: " << elapsed.count() << " s)" << std::endl;
+}
+
+void simple_runner(float (*funcPtr)(const std::vector<float> &values,
+                                    const std::vector<float> &weights,
+                                    float capacity)) {
+
+  // --- hardcoded small case ---
+  std::vector<float> values = {60, 100, 120};
+  std::vector<float> weights = {10, 20, 30};
+  float capacity = 50;
+
+  auto start = std::chrono::high_resolution_clock::now();
+  float result = funcPtr(values, weights, capacity);
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << "Small test max value: " << result
+            << " (time: " << elapsed.count() << " s)" << std::endl;
+}
+
+
+
 int main() {
 
   float (*funcPtr)(const std::vector<float> &values,
