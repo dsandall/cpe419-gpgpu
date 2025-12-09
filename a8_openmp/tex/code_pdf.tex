@@ -1,0 +1,25 @@
+\documentclass{article}
+
+% Page layout
+\usepackage[margin=1in]{geometry}
+
+% Code formatting (minted)
+\usepackage{minted}
+\usemintedstyle{friendly}  % or: bw, colorful, monokai, perldoc, etc.
+
+\title{OpenMP Standard Deviation}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\inputminted[
+    fontsize=\small,
+    breaklines,
+    linenos,
+    frame=lines
+]{c}{std_dev.c}
+
+\end{document}
+
